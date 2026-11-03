@@ -1,18 +1,19 @@
 /**
- * Google Apps Script (GAS) 側 受け取り用スクリプト
+ * Google Apps Script (GAS) 側 受け取り & Discord通知スクリプト
  *
- * 【新仕様】
- * 1. "Matches" シート: 1マッチ（セット）単位で1行記録。A列にstart.gg反映用チェックボックスを自動挿入。
- * 2. "Games" シート  : 1ゲーム（各試合）単位で1行記録。A列に確認用チェックボックスを自動挿入。
+ * 【新機能】
+ * 1. スプレッドシート ("Matches" と "Games" 両シート) への自動記録（バックアップ・集計用）
+ * 2. 運営用 Discord チャンネルへの即時カード型（Embed）通知
  *
  * 【導入手順】
- * 1. Google スプレッドシートの「拡張機能」>「Apps Script」を開く
- * 2. このコードを貼り付けて保存
- * 3. 「デプロイ」>「新しいデプロイ」> 種類「ウェブアプリ」を選択
- *    - 次のユーザーとして実行: 「自分」
- *    - アクセスできるユーザー: 「全員」
- * 4. 新しく発行されたウェブアプリURL（またはデプロイID）を環境変数やアプリ側に設定
+ * 1. Discord 側で Webhook URL を発行する（後述の手順を参照）
+ * 2. 下記の DISCORD_WEBHOOK_URL に発行したURLを貼り付ける
+ * 3. スプレッドシートの「拡張機能」>「Apps Script」にこのコードを貼り付けて保存
+ * 4. 「デプロイ」>「デプロイを管理」から鉛筆アイコンを押して「新バージョン」でデプロイ
  */
+
+// ▼▼▼ ここに発行した Discord の Webhook URL を貼り付けてください ▼▼▼
+var DISCORD_WEBHOOK_URL = 'YOUR_DISCORD_WEBHOOK_URL_HERE';
 
 function doPost(e) {
   try {
@@ -21,15 +22,25 @@ function doPost(e) {
 
     var ss = SpreadsheetApp.getActiveSpreadsheet();
 
-    // 日時フォーマット (JST: YYYY/MM/DD HH:mm:ss)
+    // 日時フォーマット (JST)
     var timestampStr = Utilities.formatDate(
       new Date(),
       'Asia/Tokyo',
       'yyyy/MM/dd HH:mm:ss'
     );
 
+    var matchWinnerName =
+      payload.matchWinner === 'P1'
+        ? payload.player1
+        : payload.matchWinner === 'P2'
+        ? payload.player2
+        : 'DRAW';
+
+    var games = payload.games || [];
+    var scoreDisplay = payload.p1Score + ' - ' + payload.p2Score;
+
     // ==========================================
-    // 1. Matches シート (1マッチ = 1行)
+    // 1. スプレッドシート保存: Matches シート
     // ==========================================
     var matchSheet = ss.getSheetByName('Matches');
     if (!matchSheet) {
@@ -46,7 +57,6 @@ function doPost(e) {
         'ゲーム数',
         '詳細内訳',
       ]);
-      // ヘッダーデザイン装飾
       var mHeader = matchSheet.getRange(1, 1, 1, 10);
       mHeader.setBackground('#111827');
       mHeader.setFontColor('#ffffff');
@@ -54,27 +64,14 @@ function doPost(e) {
       matchSheet.setFrozenRows(1);
     }
 
-    var matchWinnerName =
-      payload.matchWinner === 'P1'
-        ? payload.player1
-        : payload.matchWinner === 'P2'
-        ? payload.player2
-        : 'DRAW';
-
-    var games = payload.games || [];
-
-    // ゲーム内訳の要約 (例: "G1:P1, G2:P2, G3:P1")
     var summaryParts = games.map(function (g) {
       return 'G' + g.gameNumber + ':' + (g.winner || '-');
     });
     var gamesSummary = summaryParts.join(', ');
 
-    var scoreDisplay = payload.p1Score + ' - ' + payload.p2Score;
-
-    // Matchesに行を追加
     var matchLastRow = matchSheet.getLastRow() + 1;
     matchSheet.appendRow([
-      false, // A列: チェックボックスの初期値(false)
+      false,
       timestampStr,
       payload.bracketSide,
       payload.round,
@@ -85,12 +82,10 @@ function doPost(e) {
       games.length,
       gamesSummary,
     ]);
-
-    // A列をチェックボックス化
     matchSheet.getRange(matchLastRow, 1).insertCheckboxes();
 
     // ==========================================
-    // 2. Games シート (1ゲーム = 1行)
+    // 2. スプレッドシート保存: Games シート
     // ==========================================
     var gameSheet = ss.getSheetByName('Games');
     if (!gameSheet) {
@@ -109,7 +104,6 @@ function doPost(e) {
         'Game勝者(側)',
         'Game勝者名',
       ]);
-      // ヘッダーデザイン装飾
       var gHeader = gameSheet.getRange(1, 1, 1, 12);
       gHeader.setBackground('#1f2937');
       gHeader.setFontColor('#ffffff');
@@ -118,7 +112,6 @@ function doPost(e) {
     }
 
     var startRow = gameSheet.getLastRow() + 1;
-
     games.forEach(function (g) {
       var gameWinnerName =
         g.winner === 'P1'
@@ -128,7 +121,7 @@ function doPost(e) {
           : '';
 
       gameSheet.appendRow([
-        false, // A列: チェックボックスの初期値(false)
+        false,
         timestampStr,
         payload.bracketSide,
         payload.round,
@@ -143,10 +136,19 @@ function doPost(e) {
       ]);
     });
 
-    // 追加した全ゲーム分の行のA列をチェックボックス化
     var endRow = gameSheet.getLastRow();
     if (endRow >= startRow) {
       gameSheet.getRange(startRow, 1, endRow - startRow + 1, 1).insertCheckboxes();
+    }
+
+    // ==========================================
+    // 3. Discord へ Webhook 通知送信
+    // ==========================================
+    if (
+      DISCORD_WEBHOOK_URL &&
+      DISCORD_WEBHOOK_URL !== 'YOUR_DISCORD_WEBHOOK_URL_HERE'
+    ) {
+      sendDiscordNotification(payload, matchWinnerName, scoreDisplay, timestampStr);
     }
 
     return ContentService.createTextOutput(
@@ -154,6 +156,7 @@ function doPost(e) {
         status: 'ok',
         matchesSaved: 1,
         gamesSaved: games.length,
+        discordNotified: Boolean(DISCORD_WEBHOOK_URL),
       })
     ).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -161,4 +164,78 @@ function doPost(e) {
       JSON.stringify({ status: 'error', message: String(err) })
     ).setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+/**
+ * Discord へのリッチ通知（Embed形式）生成・送信関数
+ */
+function sendDiscordNotification(payload, matchWinnerName, scoreDisplay, timestampStr) {
+  var games = payload.games || [];
+
+  // 各ゲームの内訳行を生成
+  var gameDetails = games
+    .map(function (g) {
+      var wName =
+        g.winner === 'P1'
+          ? payload.player1
+          : g.winner === 'P2'
+          ? payload.player2
+          : '-';
+      return (
+        '**Game ' +
+        g.gameNumber +
+        '**: [' +
+        g.stage +
+        '] ➔ 🏆 **' +
+        wName +
+        '** 勝\n' +
+        '　└ P1: ' +
+        (g.p1Fighter || '未選択') +
+        ' vs P2: ' +
+        (g.p2Fighter || '未選択')
+      );
+    })
+    .join('\n\n');
+
+  // Embedの色 (Winnersなら青系 #2563EB = 2450411, Losersなら赤系 #DC2626 = 14427686)
+  var embedColor = payload.bracketSide === 'Winners' ? 2450411 : 14427686;
+
+  var discordPayload = {
+    username: '大会戦績通知Bot',
+    embeds: [
+      {
+        title: '🏆 [' + payload.bracketSide + ' ' + payload.round + '] 試合結果',
+        color: embedColor,
+        fields: [
+          {
+            name: '⚔️ 対戦カード',
+            value: '**' + payload.player1 + '** vs **' + payload.player2 + '**',
+            inline: false,
+          },
+          {
+            name: '📊 スコア結果',
+            value: '【 **' + scoreDisplay + '** 】➔ 🏆 **' + matchWinnerName + '** の勝利！',
+            inline: false,
+          },
+          {
+            name: '📝 各ゲーム詳細',
+            value: gameDetails || '詳細なし',
+            inline: false,
+          },
+        ],
+        footer: {
+          text: '受信日時: ' + timestampStr + ' | start.gg反映後に ✅ をリアクション',
+        },
+      },
+    ],
+  };
+
+  var options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(discordPayload),
+    muteHttpExceptions: true,
+  };
+
+  UrlFetchApp.fetch(DISCORD_WEBHOOK_URL, options);
 }
