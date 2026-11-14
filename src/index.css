@@ -2,12 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-    background-color: #f9fafb;
-    color: #111827;
-    -webkit-tap-highlight-color: transparent;
-  }
+:root {
+  font-family: system-ui, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+  background: #eef2f5;
+  color: #273341;
+  color-scheme: light;
 }
 
+.app { max-width: 42rem; margin: auto; padding: 1rem 1rem 3rem; }
+.app-header { position: relative; display: flex; flex-wrap: wrap; gap: .75rem; justify-content: space-between; align-items: end; margin-bottom: 1rem; border-bottom: 3px solid #9adcf6; padding-bottom: .75rem; }
+.brand { color: #405767; font-size: .875rem; font-weight: 700; }
+h1 { font-size: 1.5rem; font-weight: 750; }
+h2 { font-size: 1.05rem; font-weight: 750; }
+h3 { font-weight: 750; }
+h1:focus { outline: none; }
+.card { border: 1px solid #ccd6de; border-radius: .75rem; background: #f8fafc; padding: 1rem; margin-bottom: .75rem; }
+.card > * + * { margin-top: .75rem; }
+.fields { display: grid; gap: .75rem; }
+.section-heading { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
+form > .section-heading { margin: 1rem 0 .5rem; }
+form > .section-heading strong { font-variant-numeric: tabular-nums; background: #d4eefb; padding: .25rem .75rem; border-radius: .375rem; }
+label, legend { display: block; font-size: .875rem; font-weight: 650; overflow-wrap: anywhere; }
+legend { margin-bottom: .25rem; }
+input, select, button { border: 1px solid #9cabb8; background: #f8fafc; border-radius: .45rem; min-height: 44px; padding: .55rem .65rem; }
+input, select { width: 100%; margin-top: .25rem; font-size: 1rem; font-weight: 400; }
+button { font-weight: 650; }
+button:disabled { opacity: .6; }
+button:hover:not(:disabled) { border-color: #4096be; background: #e4f3fa; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #27769c; outline-offset: 2px; }
+.choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+.choices button { overflow-wrap: anywhere; }
+button[aria-pressed="true"], .primary { background: #a9e2f9; border-color: #397b9c; color: #233747; }
+.primary:hover:not(:disabled) { background: #94d7f4; }
+.wide { width: 100%; margin-top: .55rem; }
+.text-button { font-size: .875rem; }
+.settings { font-size: .875rem; }
+.settings[open] { width: 100%; }
+summary { cursor: pointer; font-weight: 650; }
+.settings summary { min-height: 44px; padding-top: .65rem; }
+.notice { padding: .65rem .75rem; background: #e1f1fa; border-left: 3px solid #498fb1; overflow-wrap: anywhere; }
+form > .notice { margin-bottom: .65rem; }
+.muted, .report-id { color: #485868; font-size: .875rem; }
+.result { font-size: 1.2rem; font-weight: 750; overflow-wrap: anywhere; }
+.result span { padding: .15rem .4rem; background: #d4eefb; border-radius: .35rem; white-space: nowrap; }
+.report-id code { overflow-wrap: anywhere; }
+.game-review { padding-left: 1.5rem; list-style: decimal; }
+.game-review li { margin-top: .5rem; overflow-wrap: anywhere; }
+.game-review span { display: block; font-size: .875rem; }
+.fighter-picker { min-width: 0; }
+.fighter-picker > button { display: block; width: 100%; margin-top: .25rem; text-align: left; overflow-wrap: anywhere; }
+.fighter-search { margin-top: .25rem; border: 1px solid #9cabb8; border-radius: .45rem; padding: .35rem; }
+.fighter-search ul { max-height: 13rem; overflow: auto; }
+.fighter-search li > button { width: 100%; text-align: left; border-color: transparent; }
+.fighter-search p { padding: .5rem; }
+@media (min-width: 36rem) { .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

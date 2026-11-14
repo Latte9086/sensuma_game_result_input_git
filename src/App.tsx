@@ -1,598 +1,343 @@
-import React, { useState } from 'react';
-import { Plus, Trash2, Send, Copy, Check, Loader2, Settings } from 'lucide-react';
-import {
-  BRACKET_SIDES,
-  BracketSide,
-  ROUNDS,
-  STAGES,
-} from './constants/smashData';
-import { GameResult, MatchPayload, WinnerSide } from './types';
+import { useEffect, useRef, useState } from 'react';
+import { BRACKET_SIDES, ROUNDS, STAGES } from './constants/smashData';
 import { FighterSelect } from './components/FighterSelect';
+import type { GameResult, MatchDraft, Submission } from './types';
 
-const MAX_GAMES = 5;
-const STORAGE_KEY_GAS_URL = 'sensuma_gas_webapp_url';
+const STORAGE_KEY = 'sensuma_result_v2';
+const GAS_URL_KEY = 'sensuma_gas_webapp_url';
+const defaultGasUrl = import.meta.env.VITE_GAS_URL || '';
 
-const createInitialGame = (
+const game = (number: number, previous?: GameResult): GameResult => ({
   gameNumber: number,
-  prevGame?: GameResult
-): GameResult => ({
-  gameNumber,
-  // 2戦目以降は前試合のファイターを引き継ぐことで現場での入力を高速化
-  p1Fighter: prevGame ? prevGame.p1Fighter : '',
-  p2Fighter: prevGame ? prevGame.p2Fighter : '',
-  stage: STAGES[0],
+  p1Fighter: previous?.p1Fighter ?? '',
+  p2Fighter: previous?.p2Fighter ?? '',
+  stage: '',
   winner: null,
 });
 
-export const App: React.FC = () => {
-  // 1. 基本情報ステート
-  const [bracketSide, setBracketSide] = useState<BracketSide>('Winners');
-  const [round, setRound] = useState<string>(ROUNDS[0]);
-  const [player1, setPlayer1] = useState<string>('');
-  const [player2, setPlayer2] = useState<string>('');
+const emptyDraft = (): MatchDraft => ({
+  bracketSide: '',
+  round: '',
+  player1: '',
+  player2: '',
+  bestOf: 3,
+  games: [game(1)],
+});
 
-  // 2. ゲーム結果ステート（デフォルトGame 1のみ、最大5試合）
-  const [games, setGames] = useState<GameResult[]>([createInitialGame(1)]);
+interface SavedState {
+  draft: MatchDraft;
+  pending?: Submission;
+  receipt?: Submission;
+}
 
-  // 3. GAS送信先設定・ステータス管理
-  const defaultEnvUrl =
-    import.meta.env.VITE_GAS_URL ||
-    'https://script.google.com/macros/s/AKfycbzuVHNrGYo2ZehQuTzwj1y5nWOwvWwP4LXwEaAoFbTPzwshOjX1PQBl5DayZquHXyUY/exec';
-  const [customGasUrl, setCustomGasUrl] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEY_GAS_URL) || defaultEnvUrl;
-  });
-  const [showGasConfig, setShowGasConfig] = useState<boolean>(false);
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
-
-  const notify = (msg: string) => {
-    setFeedbackMessage(msg);
-    setTimeout(() => {
-      setFeedbackMessage((prev) => (prev === msg ? null : prev));
-    }, 2500);
-  };
-
-  // スコア集計
-  const p1Score = games.filter((g) => g.winner === 'P1').length;
-  const p2Score = games.filter((g) => g.winner === 'P2').length;
-
-  // ゲーム更新ハンドラ
-  const updateGame = (index: number, patch: Partial<GameResult>) => {
-    setGames((prev) =>
-      prev.map((game, i) => (i === index ? { ...game, ...patch } : game))
-    );
-  };
-
-  // 試合を追加（最大5試合）
-  const handleAddGame = () => {
-    if (games.length >= MAX_GAMES) return;
-    const prevGame = games[games.length - 1];
-    setGames((prev) => [...prev, createInitialGame(prev.length + 1, prevGame)]);
-  };
-
-  // 試合を削除（最低1試合は残す）
-  const handleRemoveGame = (indexToRemove: number) => {
-    if (games.length <= 1) return;
-    setGames((prev) =>
-      prev
-        .filter((_, idx) => idx !== indexToRemove)
-        .map((g, idx) => ({ ...g, gameNumber: idx + 1 }))
-    );
-  };
-
-  // 送信用ペイロード生成
-  const buildPayload = (): MatchPayload => {
-    const matchWinner =
-      p1Score > p2Score ? 'P1' : p2Score > p1Score ? 'P2' : 'DRAW';
-    return {
-      timestamp: new Date().toISOString(),
-      bracketSide,
-      round,
-      player1: player1.trim() || 'Player 1',
-      player2: player2.trim() || 'Player 2',
-      p1Score,
-      p2Score,
-      matchWinner,
-      games,
-    };
-  };
-
-  // CSV文字列生成（1ゲーム1行形式）
-  const buildCsvString = (): string => {
-    const payload = buildPayload();
-    const headers = [
-      'timestamp',
-      'bracketSide',
-      'round',
-      'player1',
-      'player2',
-      'gameNumber',
-      'p1Fighter',
-      'p2Fighter',
-      'stage',
-      'gameWinner',
-      'gameWinnerName',
-    ];
-
-    const escapeCsv = (val: string | number | null) => {
-      const str = val === null || val === undefined ? '' : String(val);
-      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
-    const rows = payload.games.map((g) => {
-      const winnerName =
-        g.winner === 'P1'
-          ? payload.player1
-          : g.winner === 'P2'
-          ? payload.player2
-          : '';
-      return [
-        payload.timestamp,
-        payload.bracketSide,
-        payload.round,
-        payload.player1,
-        payload.player2,
-        g.gameNumber,
-        g.p1Fighter,
-        g.p2Fighter,
-        g.stage,
-        g.winner || '',
-        winnerName,
-      ]
-        .map(escapeCsv)
-        .join(',');
-    });
-
-    return [headers.join(','), ...rows].join('\n');
-  };
-
-  // フォームリセット
-  const resetForm = () => {
-    setPlayer1('');
-    setPlayer2('');
-    setGames([createInitialGame(1)]);
-  };
-
-  // バリデーション
-  const validateBeforeSubmit = (): string | null => {
-    if (!player1.trim() || !player2.trim()) {
-      return 'Player 1 名と Player 2 名を入力してください。';
-    }
-    for (const g of games) {
-      if (!g.p1Fighter || !g.p2Fighter) {
-        return `Game ${g.gameNumber} の使用ファイターを選択してください。`;
-      }
-      if (!g.stage) {
-        return `Game ${g.gameNumber} のステージを選択してください。`;
-      }
-      if (!g.winner) {
-        return `Game ${g.gameNumber} の勝者を選択してください。`;
-      }
-    }
+function readStorage(key: string) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
     return null;
-  };
+  }
+}
 
-  // GASへ送信
-  const handleSendToGas = async () => {
-    const validationError = validateBeforeSubmit();
-    if (validationError) {
-      notify(validationError);
-      return;
+function loadState(): SavedState {
+  try {
+    const saved = readStorage(STORAGE_KEY);
+    if (saved) return JSON.parse(saved) as SavedState;
+  } catch {
+    // A damaged local draft can be replaced with a blank form.
+  }
+  return { draft: emptyDraft() };
+}
+
+function scores(games: GameResult[]) {
+  return [
+    games.filter(({ winner }) => winner === 'P1').length,
+    games.filter(({ winner }) => winner === 'P2').length,
+  ];
+}
+
+function validate(draft: MatchDraft) {
+  if (!draft.bracketSide || !draft.round) return 'トーナメントのサイドとラウンドを選んでください。';
+  if (!draft.player1.trim() || !draft.player2.trim()) return '対戦者２人の名前を入力してください。';
+  if (draft.games.length > draft.bestOf) return `ゲーム数を ${draft.bestOf} 以下にしてください。`;
+  for (const entry of draft.games) {
+    if (!entry.p1Fighter || !entry.p2Fighter || !entry.stage || !entry.winner) {
+      return `ゲーム ${entry.gameNumber} のファイター、ステージ、勝者を選んでください。`;
     }
+  }
+  const target = (draft.bestOf + 1) / 2;
+  const final = scores(draft.games);
+  if (Math.max(...final) !== target || Math.max(...scores(draft.games.slice(0, -1))) >= target) {
+    return `どちらかが ${target} 勝して終了した結果を入力してください。`;
+  }
+  return '';
+}
 
-    const rawUrl = customGasUrl.trim();
-    if (!rawUrl) {
-      setShowGasConfig(true);
-      notify('GAS Web App URLを設定してください。');
-      return;
-    }
+function ResultSummary({ draft }: { draft: MatchDraft }) {
+  const [p1, p2] = scores(draft.games);
+  const winner = p1 > p2 ? draft.player1 : draft.player2;
+  return (
+    <>
+      <p className="muted">{draft.bracketSide} {draft.round} · BO{draft.bestOf}</p>
+      <p className="result">{draft.player1} <span>{p1}–{p2}</span> {draft.player2}</p>
+      <p><strong>{winner} 勝利</strong></p>
+    </>
+  );
+}
 
-    // デプロイID（AKfyc...）のみが貼られた場合も自動で完全なURLに補完
-    const targetUrl = rawUrl.startsWith('http')
-      ? rawUrl
-      : `https://script.google.com/macros/s/${rawUrl}/exec`;
+export default function App() {
+  const [state, setState] = useState(loadState);
+  const [gasUrl, setGasUrl] = useState(() => readStorage(GAS_URL_KEY) ?? defaultGasUrl);
+  const [screen, setScreen] = useState<'edit' | 'review' | 'receipt'>(() =>
+    state.pending ? 'review' : state.receipt && !state.draft.correctionOf ? 'receipt' : 'edit',
+  );
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+  const [storageAvailable, setStorageAvailable] = useState(true);
+  const sendingRef = useRef(false);
+  const verifiedDestination = useRef('');
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const { draft, pending, receipt } = state;
+  const [p1, p2] = scores(draft.games);
+  const clinched = Math.max(p1, p2) >= (draft.bestOf + 1) / 2;
+  const names = [draft.player1.trim() || '選手１', draft.player2.trim() || '選手２'];
 
-    setIsSubmitting(true);
+  function persist(next: SavedState) {
     try {
-      const payload = buildPayload();
-      // CORSプリフライト回避のため Content-Type: text/plain でJSON文字列をPOST
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      setStorageAvailable(true);
+    } catch {
+      setStorageAvailable(false);
+    }
+  }
+
+  useEffect(() => {
+    persist(state);
+  }, [state]);
+
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [screen]);
+
+  function update(patch: Partial<MatchDraft>) {
+    setState((current) => ({ ...current, draft: { ...current.draft, ...patch } }));
+    setError('');
+  }
+
+  function updateGame(index: number, patch: Partial<GameResult>) {
+    update({ games: draft.games.map((entry, i) => i === index ? { ...entry, ...patch } : entry) });
+  }
+
+  async function send() {
+    if (sendingRef.current) return;
+    const rawUrl = gasUrl.trim();
+    const targetUrl = /^[\w-]+$/.test(rawUrl)
+      ? `https://script.google.com/macros/s/${rawUrl}/exec`
+      : rawUrl;
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(targetUrl)) {
+      setError('設定で GAS のデプロイ URL（/exec）を確認してください。');
+      return;
+    }
+    sendingRef.current = true;
+    setSending(true);
+    setError('');
+    let submission = pending;
+    try {
+      if (verifiedDestination.current !== targetUrl) {
+        const check = await fetch(targetUrl, { signal: AbortSignal.timeout(10000) });
+        const service = check.ok ? await check.json().catch(() => null) : null;
+        if (service?.service !== 'sensuma-results' || service.version !== 2) {
+          setError('送信先が新しい GAS に対応していません。スタッフに確認してください。');
+          return;
+        }
+        verifiedDestination.current = targetUrl;
+      }
+      submission ??= {
+        ...draft,
+        player1: draft.player1.trim(),
+        player2: draft.player2.trim(),
+        reportId: crypto.randomUUID(),
+        correctionKey: draft.correctionOf && receipt ? receipt.correctionKey : crypto.randomUUID(),
+      };
+      const queued = { ...state, pending: submission };
+      setState(queued);
+      persist(queued);
+
       const response = await fetch(targetUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
-        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(submission),
+        signal: AbortSignal.timeout(20000),
       });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) throw new Error('通信エラー');
+      const result = await response.json();
+      if (result.status === 'rejected' && result.reportId === submission.reportId) {
+        setState({ ...state, pending: undefined });
+        setScreen('edit');
+        setError(result.message || '報告内容を確認してください。');
+        return;
       }
-
-      notify('送信が完了しました。フォームをリセットしました。');
-      resetForm();
-    } catch (error) {
-      console.error('GAS送信エラー:', error);
-      notify('送信に失敗しました。URLまたは通信状況を確認してください。');
+      if (result.status !== 'ok' || result.reportId !== submission.reportId) {
+        throw new Error('保存未確認');
+      }
+      const saved = { draft: emptyDraft(), receipt: submission };
+      setState(saved);
+      persist(saved);
+      setScreen('receipt');
+    } catch {
+      setError(submission
+        ? '保存を確認できませんでした。同じ内容で再試行できます。'
+        : '送信を開始できませんでした。通信状況と送信先設定を確認してください。');
     } finally {
-      setIsSubmitting(false);
+      sendingRef.current = false;
+      setSending(false);
     }
-  };
-
-  // JSONコピー
-  const handleCopyJson = async () => {
-    const json = JSON.stringify(buildPayload(), null, 2);
-    await navigator.clipboard.writeText(json);
-    notify('Copied (JSON)');
-  };
-
-  // CSVコピー
-  const handleCopyCsv = async () => {
-    const csv = buildCsvString();
-    await navigator.clipboard.writeText(csv);
-    notify('Copied (CSV)');
-  };
-
-  // GAS URL保存
-  const handleGasUrlChange = (url: string) => {
-    setCustomGasUrl(url);
-    localStorage.setItem(STORAGE_KEY_GAS_URL, url);
-  };
+  }
 
   return (
-    <div className="min-h-screen bg-[#f9fafb] text-[#111827] pb-16">
-      {/* シンプルな固定通知バー（トースト） */}
-      {feedbackMessage && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92%] max-w-md bg-black text-white px-4 py-3 text-sm font-bold border border-black flex items-center justify-between shadow-none">
-          <span className=" flex items-center gap-2">
-            <Check className="w-4 h-4 shrink-0" />
-            {feedbackMessage}
-          </span>
-          <button
-            type="button"
-            onClick={() => setFeedbackMessage(null)}
-            className="text-xs underline ml-3 shrink-0"
-          >
-            閉じる
-          </button>
+    <main className="app">
+      <header className="app-header">
+        <div>
+          <p className="brand">千スマ</p>
+          <h1 ref={headingRef} tabIndex={-1}>
+            {screen === 'receipt' ? '送信完了' : screen === 'review' ? '送信内容の確認' : draft.correctionOf ? '報告の訂正' : '対戦結果の報告'}
+          </h1>
         </div>
+        <details className="settings">
+          <summary>送信先設定</summary>
+          <label>GAS デプロイ URL
+            <input type="text" value={gasUrl} disabled={sending} spellCheck={false} onChange={(event) => {
+              const url = event.target.value;
+              setGasUrl(url);
+              try { localStorage.setItem(GAS_URL_KEY, url); } catch { setStorageAvailable(false); }
+            }} />
+          </label>
+        </details>
+      </header>
+
+      {!storageAvailable && <p className="notice">このブラウザでは、ページを閉じると入力や報告控えが失われます。</p>}
+      {screen === 'edit' && (
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          const problem = validate(draft);
+          if (problem) setError(problem);
+          else {
+            setError('');
+            setScreen('review');
+          }
+        }}>
+          {draft.correctionOf && <p className="notice">訂正はスタッフ確認待ちとして送信されます。</p>}
+          <section className="card">
+            <h2>対戦情報</h2>
+            <fieldset>
+              <legend>トーナメント</legend>
+              <div className="choices">
+                {BRACKET_SIDES.map((side) => (
+                  <button type="button" key={side} aria-pressed={draft.bracketSide === side} onClick={() => update({ bracketSide: side })}>{side}</button>
+                ))}
+              </div>
+            </fieldset>
+            <div className="fields">
+              <label>ラウンド
+                <select value={draft.round} onChange={(event) => update({ round: event.target.value })}>
+                  <option value="">選択してください</option>
+                  {ROUNDS.map((round) => <option key={round}>{round}</option>)}
+                </select>
+              </label>
+              <label>対戦形式
+                <select value={draft.bestOf} onChange={(event) => update({ bestOf: event.target.value === '5' ? 5 : 3 })}>
+                  <option value="3">BO3（2本先取）</option>
+                  <option value="5">BO5（3本先取）</option>
+                </select>
+              </label>
+            </div>
+            <div className="fields">
+              <label>選手１<input value={draft.player1} maxLength={80} onChange={(event) => update({ player1: event.target.value })} /></label>
+              <label>選手２<input value={draft.player2} maxLength={80} onChange={(event) => update({ player2: event.target.value })} /></label>
+            </div>
+          </section>
+
+          <div className="section-heading"><h2>ゲーム結果</h2><strong aria-label={`セットスコア ${p1} 対 ${p2}`}>{p1}–{p2}</strong></div>
+          {draft.games.map((entry, index) => (
+            <section className="card" key={entry.gameNumber}>
+              <div className="section-heading">
+                <h3>ゲーム {entry.gameNumber}</h3>
+                {index > 0 && index === draft.games.length - 1 && (
+                  <button type="button" className="text-button" onClick={() => update({ games: draft.games.slice(0, -1) })}>削除</button>
+                )}
+              </div>
+              <fieldset>
+                <legend>勝者</legend>
+                <div className="choices">
+                  {(['P1', 'P2'] as const).map((side, i) => (
+                    <button type="button" key={side} aria-pressed={entry.winner === side} onClick={() => updateGame(index, { winner: side })}>{names[i]}</button>
+                  ))}
+                </div>
+              </fieldset>
+              <label>ステージ
+                <select value={entry.stage} onChange={(event) => updateGame(index, { stage: event.target.value })}>
+                  <option value="">選択してください</option>
+                  {STAGES.map((stage) => <option key={stage}>{stage}</option>)}
+                </select>
+              </label>
+              <div className="fields">
+                <FighterSelect label={`${names[0]}のファイター`} value={entry.p1Fighter} onChange={(value) => updateGame(index, { p1Fighter: value })} />
+                <FighterSelect label={`${names[1]}のファイター`} value={entry.p2Fighter} onChange={(value) => updateGame(index, { p2Fighter: value })} />
+              </div>
+            </section>
+          ))}
+          {!clinched && draft.games.length < draft.bestOf && (
+            <button className="wide" type="button" onClick={() => update({ games: [...draft.games, game(draft.games.length + 1, draft.games[draft.games.length - 1])] })}>＋ ゲームを追加</button>
+          )}
+          {error && <p role="alert" className="notice">{error}</p>}
+          <button type="submit" className="primary wide">送信内容を確認</button>
+          {draft.correctionOf && <button type="button" className="wide" onClick={() => {
+            setState({ draft: emptyDraft(), receipt });
+            setError('');
+            setScreen('receipt');
+          }}>訂正を取り消す</button>}
+        </form>
       )}
 
-      {/* メインコンテナ */}
-      <main className="max-w-xl mx-auto px-4 pt-5 space-y-6">
-        {/* タイトル & GAS設定トグル */}
-        <header className="flex items-center justify-between border-b-2 border-black pb-3">
-          <div>
-            <h1 className="text-lg font-black tracking-tight text-black uppercase">
-              SSBU Match Recorder
-            </h1>
-            <p className="text-xs text-gray-600">
-              大会結果入力フォーム（BO3 / BO5）
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowGasConfig((prev) => !prev)}
-            className={`px-3 py-2 text-xs font-bold border border-black flex items-center gap-1.5 ${
-              showGasConfig
-                ? 'bg-black text-white'
-                : 'bg-white text-black hover:bg-gray-100'
-            }`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-            <span>GAS設定</span>
+      {screen === 'review' && (
+        <section className="card">
+          {(pending ?? draft).correctionOf && <p className="notice">訂正として送信します。</p>}
+          <ResultSummary draft={pending ?? draft} />
+          <details>
+            <summary>ゲームの内訳</summary>
+            <ol className="game-review">
+              {(pending ?? draft).games.map((entry) => (
+                <li key={entry.gameNumber}>
+                  <strong>{entry.stage} · {names[entry.winner === 'P1' ? 0 : 1]} 勝利</strong>
+                  <span>{names[0]}：{entry.p1Fighter} ／ {names[1]}：{entry.p2Fighter}</span>
+                </li>
+              ))}
+            </ol>
+          </details>
+          {error && <p role="alert" className="notice">{error}</p>}
+          <button className="primary wide" type="button" disabled={sending} onClick={send}>
+            {sending ? '送信中…' : pending ? '同じ内容で再試行' : '結果を送信'}
           </button>
-        </header>
-
-        {/* GAS URL設定欄（開閉式） */}
-        {showGasConfig && (
-          <section className="bg-white border border-black p-4 space-y-2">
-            <label className="block text-xs font-bold uppercase tracking-wider text-black">
-              Google Apps Script Web App URL (VITE_GAS_URL)
-            </label>
-            <input
-              type="url"
-              value={customGasUrl}
-              onChange={(e) => handleGasUrlChange(e.target.value)}
-              placeholder="https://script.google.com/macros/s/.../exec"
-              className="w-full min-h-[44px] px-3 py-2 text-sm bg-white border border-black text-black focus:outline-none focus:ring-2 focus:ring-black"
-            />
-            <p className="text-xs text-gray-600">
-              ※ 環境変数 <code>VITE_GAS_URL</code> またはここで指定したURLへPOST送信されます（ブラウザに自動保存）。
-            </p>
-          </section>
-        )}
-
-        {/* 1. 基本情報入力エリア */}
-        <section className="bg-white border border-black p-4 space-y-4">
-          <div className="flex items-center justify-between border-b border-gray-300 pb-2">
-            <h2 className="text-sm font-black uppercase tracking-wider text-black">
-              1. Match Info
-            </h2>
-            <span className="text-xs font-mono font-bold px-2 py-0.5 border border-black bg-white text-black">
-              {p1Score} - {p2Score}
-            </span>
-          </div>
-
-          {/* トーナメントサイド選択 & ラウンド選択 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
-                Bracket Side
-              </label>
-              <div className="grid grid-cols-2 border border-black bg-white">
-                {BRACKET_SIDES.map((side) => {
-                  const isActive = bracketSide === side;
-                  return (
-                    <button
-                      key={side}
-                      type="button"
-                      onClick={() => setBracketSide(side)}
-                      className={`min-h-[44px] text-sm font-bold transition-none ${
-                        isActive
-                          ? 'bg-black text-white'
-                          : 'bg-white text-black hover:bg-gray-100'
-                      } ${side === 'Winners' ? 'border-r border-black' : ''}`}
-                    >
-                      {side}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div>
-              <label
-                htmlFor="round-select"
-                className="block text-xs font-bold uppercase tracking-wider text-black mb-1"
-              >
-                Round
-              </label>
-              <select
-                id="round-select"
-                value={round}
-                onChange={(e) => setRound(e.target.value)}
-                className="w-full min-h-[44px] px-3 py-2 text-sm font-bold bg-white border border-black text-black focus:outline-none focus:ring-2 focus:ring-black"
-              >
-                {ROUNDS.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Player 1 & Player 2 名入力 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label
-                htmlFor="p1-name"
-                className="block text-xs font-bold uppercase tracking-wider text-black mb-1"
-              >
-                Player 1 Name
-              </label>
-              <input
-                id="p1-name"
-                type="text"
-                value={player1}
-                onChange={(e) => setPlayer1(e.target.value)}
-                placeholder="Player 1 名前"
-                className="w-full min-h-[46px] px-3 py-2 text-base font-bold bg-white border border-black text-black placeholder:text-gray-400 placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-black"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="p2-name"
-                className="block text-xs font-bold uppercase tracking-wider text-black mb-1"
-              >
-                Player 2 Name
-              </label>
-              <input
-                id="p2-name"
-                type="text"
-                value={player2}
-                onChange={(e) => setPlayer2(e.target.value)}
-                placeholder="Player 2 名前"
-                className="w-full min-h-[46px] px-3 py-2 text-base font-bold bg-white border border-black text-black placeholder:text-gray-400 placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-black"
-              />
-            </div>
-          </div>
+          {!pending && <button type="button" className="wide" disabled={sending} onClick={() => { setError(''); setScreen('edit'); }}>入力に戻る</button>}
         </section>
+      )}
 
-        {/* 2. ゲーム結果入力エリア（BO3 / BO5 対応） */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-black uppercase tracking-wider text-black">
-              2. Games ({games.length} / {MAX_GAMES})
-            </h2>
-            {games.length < MAX_GAMES && (
-              <button
-                type="button"
-                onClick={handleAddGame}
-                className="min-h-[38px] px-3 py-1.5 text-xs font-bold border border-black bg-white text-black hover:bg-black hover:text-white active:bg-black active:text-white flex items-center gap-1"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>試合を追加</span>
-              </button>
-            )}
-          </div>
-
-          {games.map((game, index) => {
-            const p1Display = player1.trim() || 'P1';
-            const p2Display = player2.trim() || 'P2';
-            const isWinnerP1 = game.winner === 'P1';
-            const isWinnerP2 = game.winner === 'P2';
-
-            return (
-              <div
-                key={game.gameNumber}
-                className="bg-white border border-black p-4 space-y-4"
-              >
-                {/* カードヘッダー */}
-                <div className="flex items-center justify-between border-b border-black pb-2">
-                  <span className="text-base font-black tracking-tight text-black">
-                    GAME {game.gameNumber}
-                  </span>
-                  {games.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveGame(index)}
-                      className="px-2.5 py-1 text-xs font-bold border border-black bg-white text-black hover:bg-black hover:text-white flex items-center gap-1"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>- 削除</span>
-                    </button>
-                  )}
-                </div>
-
-                {/* ステージ選択 */}
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
-                    Stage（選択ステージ）
-                  </label>
-                  <select
-                    value={game.stage}
-                    onChange={(e) =>
-                      updateGame(index, { stage: e.target.value })
-                    }
-                    className="w-full min-h-[46px] px-3 py-2 text-sm font-bold bg-white border border-black text-black focus:outline-none focus:ring-2 focus:ring-black"
-                  >
-                    {STAGES.map((stage) => (
-                      <option key={stage} value={stage}>
-                        {stage}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* P1 & P2 使用ファイター選択 */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <FighterSelect
-                    label={`${p1Display} 使用ファイター`}
-                    value={game.p1Fighter}
-                    onChange={(fighter) =>
-                      updateGame(index, { p1Fighter: fighter })
-                    }
-                  />
-                  <FighterSelect
-                    label={`${p2Display} 使用ファイター`}
-                    value={game.p2Fighter}
-                    onChange={(fighter) =>
-                      updateGame(index, { p2Fighter: fighter })
-                    }
-                  />
-                </div>
-
-                {/* 勝者選択トグルボタン */}
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-black mb-1">
-                    Winner（勝者選択）
-                  </label>
-                  <div className="grid grid-cols-2 border border-black bg-white">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateGame(index, {
-                          winner: isWinnerP1 ? null : ('P1' as WinnerSide),
-                        })
-                      }
-                      className={`min-h-[48px] px-3 py-2.5 text-sm font-bold border-r border-black truncate ${
-                        isWinnerP1
-                          ? 'bg-black text-white'
-                          : 'bg-white text-black hover:bg-gray-100'
-                      }`}
-                    >
-                      {p1Display} 勝利
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        updateGame(index, {
-                          winner: isWinnerP2 ? null : ('P2' as WinnerSide),
-                        })
-                      }
-                      className={`min-h-[48px] px-3 py-2.5 text-sm font-bold truncate ${
-                        isWinnerP2
-                          ? 'bg-black text-white'
-                          : 'bg-white text-black hover:bg-gray-100'
-                      }`}
-                    >
-                      {p2Display} 勝利
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-
-          {/* 下部の「+ 試合を追加」ボタン（スマホでスクロール後にすぐ押せる配置） */}
-          {games.length < MAX_GAMES && (
-            <button
-              type="button"
-              onClick={handleAddGame}
-              className="w-full min-h-[48px] py-3 text-sm font-bold border border-black bg-white text-black hover:bg-black hover:text-white active:bg-black active:text-white flex items-center justify-center gap-2"
-            >
-              <Plus className="w-4 h-4" />
-              <span>+ 試合を追加（Game {games.length + 1}）</span>
-            </button>
-          )}
+      {screen === 'receipt' && receipt && (
+        <section className="card">
+          <p className="notice">{receipt.correctionOf ? '訂正を受け付けました。スタッフの確認をお待ちください。' : '結果を受け付けました。'}</p>
+          <ResultSummary draft={receipt} />
+          <p className="report-id">報告ID <code>{receipt.reportId}</code></p>
+          <button type="button" className="wide" onClick={() => {
+            const { reportId, correctionKey: _key, ...previous } = receipt;
+            setState({ ...state, draft: { ...previous, correctionOf: reportId } });
+            setScreen('edit');
+          }}>この報告を訂正</button>
+          <button type="button" className="primary wide" onClick={() => {
+            setState({ draft: emptyDraft() });
+            setScreen('edit');
+          }}>新しい対戦を報告</button>
         </section>
-
-        {/* 3. アクション部（送信・出力） */}
-        <section className="bg-white border border-black p-4 space-y-3">
-          <h2 className="text-sm font-black uppercase tracking-wider text-black border-b border-gray-300 pb-2">
-            3. Submit / Export
-          </h2>
-
-          {/* GASに送信ボタン */}
-          <button
-            type="button"
-            onClick={handleSendToGas}
-            disabled={isSubmitting}
-            className="w-full min-h-[52px] px-4 py-3 text-base font-bold bg-black text-white border border-black hover:bg-gray-900 active:bg-gray-800 disabled:opacity-50 flex items-center justify-center gap-2"
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                <span>送信中...</span>
-              </>
-            ) : (
-              <>
-                <Send className="w-4 h-4" />
-                <span>GASに送信</span>
-              </>
-            )}
-          </button>
-
-          {/* JSONコピー & CSVコピー */}
-          <div className="grid grid-cols-2 gap-3 pt-1">
-            <button
-              type="button"
-              onClick={handleCopyJson}
-              className="min-h-[46px] px-3 py-2.5 text-sm font-bold bg-white text-black border border-black hover:bg-black hover:text-white active:bg-black active:text-white flex items-center justify-center gap-1.5"
-            >
-              <Copy className="w-4 h-4" />
-              <span>JSONをコピー</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleCopyCsv}
-              className="min-h-[46px] px-3 py-2.5 text-sm font-bold bg-white text-black border border-black hover:bg-black hover:text-white active:bg-black active:text-white flex items-center justify-center gap-1.5"
-            >
-              <Copy className="w-4 h-4" />
-              <span>CSVをコピー</span>
-            </button>
-          </div>
-        </section>
-      </main>
-    </div>
+      )}
+    </main>
   );
-};
-
-export default App;
+}
 
