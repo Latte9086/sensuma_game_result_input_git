@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { BRACKET_SIDES, ROUNDS, STAGES } from './constants/smashData';
+import { BRACKET_SIDES, FIGHTER_ITEMS, ROUNDS, STAGES, STAGE_ENGLISH_NAMES } from './constants/smashData';
 import { FighterSelect } from './components/FighterSelect';
 import type { GameResult, MatchDraft, Submission } from './types';
+
+const fighterEnglishNames = new Map(FIGHTER_ITEMS.map(({ name, englishName }) => [name, englishName]));
+const fighterJapaneseNames = new Map(FIGHTER_ITEMS.map(({ name, englishName }) => [englishName, name]));
+const stageJapaneseNames = new Map(Object.entries(STAGE_ENGLISH_NAMES).map(([name, englishName]) => [englishName, name]));
 
 const STORAGE_KEY = 'sensuma_result_v2';
 const GAS_URL_KEY = 'sensuma_gas_webapp_url';
@@ -155,6 +159,12 @@ export default function App() {
         ...draft,
         player1: draft.player1.trim(),
         player2: draft.player2.trim(),
+        games: draft.games.map((entry) => ({
+          ...entry,
+          p1Fighter: fighterEnglishNames.get(entry.p1Fighter) ?? entry.p1Fighter,
+          p2Fighter: fighterEnglishNames.get(entry.p2Fighter) ?? entry.p2Fighter,
+          stage: STAGE_ENGLISH_NAMES[entry.stage] ?? entry.stage,
+        })),
         reportId: crypto.randomUUID(),
         correctionKey: draft.correctionOf && receipt ? receipt.correctionKey : crypto.randomUUID(),
       };
@@ -305,7 +315,7 @@ export default function App() {
           <details>
             <summary>ゲームの内訳</summary>
             <ol className="game-review">
-              {(pending ?? draft).games.map((entry) => (
+              {draft.games.map((entry) => (
                 <li key={entry.gameNumber}>
                   <strong>{entry.stage} · {names[entry.winner === 'P1' ? 0 : 1]} 勝利</strong>
                   <span>{names[0]}：{entry.p1Fighter} ／ {names[1]}：{entry.p2Fighter}</span>
@@ -328,7 +338,13 @@ export default function App() {
           <p className="report-id">報告ID <code>{receipt.reportId}</code></p>
           <button type="button" className="wide" onClick={() => {
             const { reportId, correctionKey: _key, ...previous } = receipt;
-            setState({ ...state, draft: { ...previous, correctionOf: reportId } });
+            const games = previous.games.map((entry) => ({
+              ...entry,
+              p1Fighter: fighterJapaneseNames.get(entry.p1Fighter) ?? entry.p1Fighter,
+              p2Fighter: fighterJapaneseNames.get(entry.p2Fighter) ?? entry.p2Fighter,
+              stage: stageJapaneseNames.get(entry.stage) ?? entry.stage,
+            }));
+            setState({ ...state, draft: { ...previous, games, correctionOf: reportId } });
             setScreen('edit');
           }}>この報告を訂正</button>
           <button type="button" className="primary wide" onClick={() => {
