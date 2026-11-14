@@ -20,7 +20,7 @@ const emptyDraft = (): MatchDraft => ({
   round: '',
   player1: '',
   player2: '',
-  bestOf: 3,
+  bestOf: 5,
   games: [game(1)],
 });
 
