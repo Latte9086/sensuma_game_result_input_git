@@ -25,3 +25,20 @@ export interface Submission extends MatchDraft {
   reportId: string;
   correctionKey: string;
 }
+
+export interface StartggMatch {
+  id: string;
+  side: BracketSide;
+  round: string;
+  phase: string;
+  pool: string;
+  station: number | null;
+  bestOf: BestOf;
+  players: [{ id: string; name: string } | null, { id: string; name: string } | null];
+  completed: boolean;
+  winnerId: string;
+  score: string;
+  unavailable: string;
+}
+
+export type ReflectionState = 'queued' | 'working' | 'applied' | 'blocked' | 'failed';

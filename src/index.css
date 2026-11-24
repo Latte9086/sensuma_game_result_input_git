@@ -27,7 +27,7 @@ legend { margin-bottom: .25rem; }
 input, select, button { border: 1px solid #9cabb8; background: #f8fafc; border-radius: .45rem; min-height: 44px; padding: .55rem .65rem; }
 input, select { width: 100%; margin-top: .25rem; font-size: 1rem; font-weight: 400; }
 button { font-weight: 650; }
-button:disabled { opacity: .6; }
+button:disabled { background: #e8eef2; border-color: #b1bec8; color: #526373; }
 button:hover:not(:disabled) { border-color: #4096be; background: #e4f3fa; }
 button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #27769c; outline-offset: 2px; }
 .choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
@@ -43,8 +43,9 @@ summary { cursor: pointer; font-weight: 650; }
 .notice { padding: .65rem .75rem; background: #e1f1fa; border-left: 3px solid #498fb1; overflow-wrap: anywhere; }
 form > .notice { margin-bottom: .65rem; }
 .muted, .report-id { color: #485868; font-size: .875rem; }
-.result { font-size: 1.2rem; font-weight: 750; overflow-wrap: anywhere; }
-.result span { padding: .15rem .4rem; background: #d4eefb; border-radius: .35rem; white-space: nowrap; }
+.result { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: .55rem; font-size: 1rem; overflow-wrap: anywhere; }
+.result b:last-child { text-align: right; }
+.result span { font-size: 1.35rem; font-weight: 750; font-variant-numeric: tabular-nums; padding: .15rem .4rem; background: #d4eefb; border-radius: .35rem; white-space: nowrap; }
 .report-id code { overflow-wrap: anywhere; }
 .game-review { padding-left: 1.5rem; list-style: decimal; }
 .game-review li { margin-top: .5rem; overflow-wrap: anywhere; }
@@ -56,3 +57,37 @@ form > .notice { margin-bottom: .65rem; }
 .fighter-search li > button { width: 100%; text-align: left; border-color: transparent; }
 .fighter-search p { padding: .5rem; }
 @media (min-width: 36rem) { .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.match-search > * + * { margin-top: .5rem; }
+.match-list { display: grid; gap: .75rem; padding: 0; list-style: none; }
+.match-list li { padding: .75rem; background: #fff; border: 1px solid #ccd6de; border-radius: .5rem; overflow-wrap: anywhere; }
+.match-list li > * + * { margin-top: .25rem; }
+
+.search-field { position: relative; min-width: 0; }
+.search-suggestions {
+  position: absolute;
+  z-index: 2;
+  inset-inline: 0;
+  max-height: min(13rem, 32dvh);
+  overscroll-behavior: contain;
+  overflow-y: auto;
+  margin: .25rem 0 0;
+  padding: .25rem;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #9cabb8;
+  border-radius: .45rem;
+  box-shadow: 0 6px 18px #27334120;
+}
+.search-suggestions li { min-height: 44px; padding: .65rem; cursor: pointer; overflow-wrap: anywhere; }
+.search-suggestions li:hover, .search-suggestions li[aria-selected="true"] { background: #dbeff8; }
+
+.station-label { align-self: center; flex: 0 0 auto; padding: .3rem .65rem; border-radius: .45rem; background: #d4eefb; color: #273f51; font-size: .875rem; }
+.station-label strong { font-variant-numeric: tabular-nums; }
+.match-status { font-size: .875rem; font-weight: 700; color: #315567; }
+.existing-result strong { font-size: .875rem; }
+.existing-result p { margin-top: .25rem; font-size: .875rem; }
+@media (min-width: 340px) and (max-width: 575px) {
+  .match-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .match-filters > :nth-child(-n+2) { grid-column: 1 / -1; }
+}

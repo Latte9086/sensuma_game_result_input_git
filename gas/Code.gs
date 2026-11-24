@@ -4,7 +4,7 @@
 const MATCH_HEADERS = [
   '反映済', '受信時刻', 'サイド', 'ラウンド', 'Player 1', 'スコア',
   'Player 2', 'セット勝者', 'ゲーム数', '詳細内訳', '報告ID', '訂正元ID',
-  '報告状況', 'BO', '訂正キーのハッシュ', '内容のハッシュ', 'ゲーム保存済', 'Discord',
+  '報告状況', 'BO', '訂正キーのハッシュ', '内容のハッシュ', 'ゲーム保存済',
 ];
 const GAME_HEADERS = [
   '確認済', '受信時刻', 'サイド', 'ラウンド', 'Player 1', 'Player 2',
@@ -13,7 +13,7 @@ const GAME_HEADERS = [
 ];
 const COL = {
   reflected: 1, details: 10, id: 11, original: 12, status: 13,
-  keyHash: 15, contentHash: 16, gamesSaved: 17, notification: 18,
+  keyHash: 15, contentHash: 16, gamesSaved: 17,
 };
 const STATUS = {
   newReport: '受付済', pending: '訂正确認待ち', superseded: '訂正済',
@@ -23,6 +23,11 @@ const STATUS = {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('千スマ')
     .addItem('このシートを保存先に設定', 'configureSpreadsheet')
+    .addSeparator()
+    .addItem('start.gg の対戦を取り込む', 'startggSync')
+    .addItem('start.gg 定期反映を開始', 'installStartggMinuteJob')
+    .addItem('本部の訂正前後を記録', 'saveStartggCorrectionSnapshot')
+    .addItem('選択した報告の反映を再試行', 'retrySelectedStartggReport')
     .addSeparator()
     .addItem('選択した訂正を承認', 'approveCorrection')
     .addItem('選択した訂正を却下', 'declineCorrection')
@@ -42,7 +47,7 @@ function resultSpreadsheet() {
 }
 
 function doGet() {
-  return json({ service: 'sensuma-results', version: 2 });
+  return json({ service: 'sensuma-results', version: startggConfig().slug ? 3 : 2 });
 }
 
 function doPost(e) {
@@ -53,6 +58,22 @@ function doPost(e) {
     return json({ status: 'rejected', message: '報告形式が不正です。' });
   }
 
+  if (payload?.action) {
+    const { action, reportId } = payload;
+    try {
+      if (action === 'options') return json(startggSearchOptions());
+      if (action === 'search') return json(searchStartggMatches(payload));
+      if (action === 'status') return json(startggReceipt(reportId, payload.kick));
+      if (action === 'submit') return json({ ...intakeStartggReport(payload), reportId });
+    } catch (error) {
+      console.error(String(error));
+      return json({ status: 'error', reportId, message: '処理を確認できませんでした。時間をおいて再試行してください。' });
+    }
+    return json({ status: 'rejected', message: '報告形式が不正です。' });
+  }
+  if (startggConfig().slug) {
+    return json({ status: 'rejected', reportId: payload?.reportId, message: '新しい報告画面を使用してください。' });
+  }
   const reportId = payload && payload.reportId;
   const problem = validate(payload);
   if (problem) return json({ status: 'rejected', reportId, message: problem });
@@ -72,14 +93,6 @@ function doPost(e) {
 
   if (saved.message) return json({ status: 'rejected', reportId, message: saved.message });
 
-  if (saved.notify) {
-    try {
-      const notification = notifyDiscord(payload, saved);
-      updateNotification(reportId, notification);
-    } catch (error) {
-      console.error(String(error));
-    }
-  }
   return json({ status: 'ok', reportId });
 }
 
@@ -138,7 +151,7 @@ function prepareSheet(spreadsheet, name, headers, legacyLength) {
     sheet.getRange(1, 1, 1, headers.length).setValues([headers])
       .setBackground('#e0f2fe').setFontColor('#334155').setFontWeight('bold');
     sheet.setFrozenRows(1);
-  } else if (sheet.getRange(1, legacyLength + 1).isBlank()) {
+  } else if (legacyLength < headers.length && sheet.getRange(1, legacyLength + 1).isBlank()) {
     const added = headers.slice(legacyLength);
     sheet.getRange(1, legacyLength + 1, 1, added.length).setValues([added])
       .setBackground('#e0f2fe').setFontColor('#334155').setFontWeight('bold');
@@ -163,7 +176,7 @@ function readOriginal(matches, payload, keyHash) {
       [STATUS.superseded, STATUS.declined].includes(values[COL.status - 1])) {
     return { message: 'この報告は訂正できません。スタッフに報告IDを伝えてください。' };
   }
-  return { row, summary: values.slice(2, 8).join(' ｜ ') };
+  return {};
 }
 
 function saveReport(payload) {
@@ -178,7 +191,7 @@ function saveReport(payload) {
   if (prior && prior[COL.contentHash - 1] !== contentHash) {
     return { message: '同じ報告IDに異なる内容があります。スタッフに確認してください。' };
   }
-  if (prior && prior[COL.gamesSaved - 1] === true) return { notify: false };
+  if (prior && prior[COL.gamesSaved - 1] === true) return {};
 
   const original = payload.correctionOf ? readOriginal(matches, payload, keyHash) : null;
   if (!prior && original && original.message) return original;
@@ -195,7 +208,7 @@ function saveReport(payload) {
       false, time, payload.bracketSide, safeCell(payload.round), names[0], score, names[1],
       safeCell(winner), payload.games.length, '', payload.reportId, payload.correctionOf || '',
       '保存処理中', payload.bestOf,
-      keyHash, contentHash, false, '処理中',
+      keyHash, contentHash, false,
     ]]);
   }
   matches.getRange(row, COL.reflected).insertCheckboxes();
@@ -223,60 +236,7 @@ function saveReport(payload) {
   matches.getRange(row, COL.status, 1, 5).setValues([[
     payload.correctionOf ? STATUS.pending : STATUS.newReport, payload.bestOf, keyHash, contentHash, true,
   ]]);
-  return {
-    notify: true, winner, score,
-    originalSummary: original ? original.summary : '',
-    link: spreadsheet.getUrl() + '#gid=' + matches.getSheetId() + '&range=A' + row,
-  };
-}
-
-function notifyDiscord(payload, saved) {
-  const webhook = PropertiesService.getScriptProperties().getProperty('DISCORD_WEBHOOK_URL');
-  if (!webhook) return '未設定';
-
-  const clean = text => text.replace(/[\\`*_{}\[\]()<>#+!|~]/g, '\\$&');
-  const position = payload.bracketSide + ' ' + clean(payload.round);
-  const result = clean(payload.player1) + ' ' + saved.score + ' ' + clean(payload.player2);
-  const correction = payload.correctionOf ? '訂正确認待ち｜' : '';
-  const description = '**' + result + '**\n' + clean(saved.winner) + ' 勝利' +
-    (payload.correctionOf ? '\n訂正元ID: ' + payload.correctionOf : '') +
-    (saved.originalSummary ? '\n訂正前: ' + clean(saved.originalSummary) : '');
-
-  try {
-    const response = UrlFetchApp.fetch(webhook, {
-      method: 'post',
-      contentType: 'application/json',
-      muteHttpExceptions: true,
-      payload: JSON.stringify({
-        username: '千スマ 結果報告',
-        allowed_mentions: { parse: [] },
-        embeds: [{
-          title: correction + position,
-          description,
-          color: 8231918,
-          url: saved.link,
-          footer: { text: '報告ID ' + payload.reportId },
-        }],
-      }),
-    });
-    const status = response.getResponseCode();
-    return status >= 200 && status < 300 ? '通知済' : '通知失敗 (HTTP ' + status + ')';
-  } catch {
-    return '通知失敗';
-  }
-}
-
-function updateNotification(reportId, status) {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(10000);
-  try {
-    const sheet = resultSpreadsheet().getSheetByName('Matches');
-    const [row] = reportRows(sheet, COL.id, reportId);
-    if (row) sheet.getRange(row, COL.notification).setValue(status);
-    SpreadsheetApp.flush();
-  } finally {
-    lock.releaseLock();
-  }
+  return {};
 }
 
 function approveCorrection() {

@@ -1,13 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { BRACKET_SIDES, FIGHTER_ITEMS, ROUNDS, STAGES, STAGE_ENGLISH_NAMES } from './constants/smashData';
 import { FighterSelect } from './components/FighterSelect';
-import type { GameResult, MatchDraft, Submission } from './types';
+import { MatchSearch, reportApi } from './MatchSearch';
+import type { GameResult, MatchDraft, ReflectionState, StartggMatch, Submission } from './types';
 
 const fighterEnglishNames = new Map(FIGHTER_ITEMS.map(({ name, englishName }) => [name, englishName]));
 const fighterJapaneseNames = new Map(FIGHTER_ITEMS.map(({ name, englishName }) => [englishName, name]));
 const stageJapaneseNames = new Map(Object.entries(STAGE_ENGLISH_NAMES).map(([name, englishName]) => [englishName, name]));
 
-const STORAGE_KEY = 'sensuma_result_v2';
+const startggMode = import.meta.env.VITE_REPORT_MODE !== 'manual';
+const rawStation = new URLSearchParams(window.location.search).get('station');
+const station = rawStation && /^(?:[1-9]|1\d|2[0-5])$/.test(rawStation) ? Number(rawStation) : null;
+const STORAGE_KEY = startggMode
+  ? 'sensuma_result_v3_' + (import.meta.env.VITE_GAS_URL || 'test') + '_' + (station ?? 'general')
+  : 'sensuma_result_v2';
+const REFLECTION_LABELS: Record<ReflectionState, string> = {
+  queued: '受付済み・反映待ち', working: '受付済み・start.gg へ反映中',
+  applied: 'start.gg 反映済み', blocked: '自動反映の対象外', failed: '要対応・start.gg への反映を確認できませんでした',
+};
 const GAS_URL_KEY = 'sensuma_gas_webapp_url';
 const defaultGasUrl = import.meta.env.VITE_GAS_URL || '';
 
@@ -32,6 +42,10 @@ interface SavedState {
   draft: MatchDraft;
   pending?: Submission;
   receipt?: Submission;
+  match?: StartggMatch;
+  reflection?: ReflectionState;
+  searching?: boolean;
+  reflectionMessage?: string;
 }
 
 function readStorage(key: string) {
@@ -81,8 +95,8 @@ function ResultSummary({ draft }: { draft: MatchDraft }) {
   const winner = p1 > p2 ? draft.player1 : draft.player2;
   return (
     <>
-      <p className="muted">{draft.bracketSide} {draft.round} · BO{draft.bestOf}</p>
-      <p className="result">{draft.player1} <span>{p1}–{p2}</span> {draft.player2}</p>
+      <p className="muted">{!startggMode && draft.bracketSide + ' '}{draft.round} · BO{draft.bestOf}</p>
+      <p className="result"><b>{draft.player1}</b> <span>{p1}–{p2}</span> <b>{draft.player2}</b></p>
       <p><strong>{winner} 勝利</strong></p>
     </>
   );
@@ -90,9 +104,9 @@ function ResultSummary({ draft }: { draft: MatchDraft }) {
 
 export default function App() {
   const [state, setState] = useState(loadState);
-  const [gasUrl, setGasUrl] = useState(() => readStorage(GAS_URL_KEY) ?? defaultGasUrl);
+  const [gasUrl, setGasUrl] = useState(() => startggMode ? defaultGasUrl : readStorage(GAS_URL_KEY) ?? defaultGasUrl);
   const [screen, setScreen] = useState<'edit' | 'review' | 'receipt'>(() =>
-    state.pending ? 'review' : state.receipt && !state.draft.correctionOf ? 'receipt' : 'edit',
+    state.pending ? 'review' : state.receipt && (startggMode ? !state.match && !state.searching : !state.draft.correctionOf) ? 'receipt' : 'edit',
   );
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
@@ -100,7 +114,7 @@ export default function App() {
   const sendingRef = useRef(false);
   const verifiedDestination = useRef('');
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const { draft, pending, receipt } = state;
+  const { draft, pending, receipt, match, reflection, reflectionMessage } = state;
   const [p1, p2] = scores(draft.games);
   const clinched = Math.max(p1, p2) >= (draft.bestOf + 1) / 2;
   const names = [draft.player1.trim() || '選手１', draft.player2.trim() || '選手２'];
@@ -122,6 +136,39 @@ export default function App() {
     headingRef.current?.focus();
   }, [screen]);
 
+  useEffect(() => {
+    if (!startggMode || !receipt || screen !== 'receipt' || !['queued', 'working'].includes(reflection || '')) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function check() {
+      try {
+        const status = await reportApi<{ status: string; state?: ReflectionState; message?: string }>(
+          gasUrl, { action: 'status', reportId: receipt!.reportId, kick: true },
+        );
+        if (stopped) return;
+        if (status.status === 'ok' && status.state) {
+          setState((current) => ({ ...current, reflection: status.state, reflectionMessage: status.message }));
+          if (!['queued', 'working'].includes(status.state)) return;
+        }
+      } catch {
+        // A temporary connection error leaves the saved receipt available.
+      }
+      if (!stopped) timer = setTimeout(check, 12000);
+    }
+    timer = setTimeout(check, 3000);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [gasUrl, receipt, reflection, screen]);
+
+  function selectMatch(selected: StartggMatch) {
+    const [first, second] = selected.players;
+    if (!first || !second) return;
+    setState((current) => ({ ...current, match: selected, draft: {
+      ...emptyDraft(), player1: first.name, player2: second.name,
+      round: selected.round, bracketSide: selected.side, bestOf: selected.bestOf,
+    } }));
+    setError('');
+  }
+
   function update(patch: Partial<MatchDraft>) {
     setState((current) => ({ ...current, draft: { ...current.draft, ...patch } }));
     setError('');
@@ -137,8 +184,13 @@ export default function App() {
     const targetUrl = /^[\w-]+$/.test(rawUrl)
       ? `https://script.google.com/macros/s/${rawUrl}/exec`
       : rawUrl;
-    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(targetUrl)) {
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(targetUrl) &&
+        !(import.meta.env.DEV && targetUrl.startsWith('/'))) {
       setError('設定で GAS のデプロイ URL（/exec）を確認してください。');
+      return;
+    }
+    if (startggMode && !match) {
+      setError('対戦を検索して選んでください。');
       return;
     }
     sendingRef.current = true;
@@ -149,7 +201,7 @@ export default function App() {
       if (verifiedDestination.current !== targetUrl) {
         const check = await fetch(targetUrl, { signal: AbortSignal.timeout(10000) });
         const service = check.ok ? await check.json().catch(() => null) : null;
-        if (service?.service !== 'sensuma-results' || service.version !== 2) {
+        if (service?.service !== 'sensuma-results' || service.version !== (startggMode ? 3 : 2)) {
           setError('送信先が新しい GAS に対応していません。スタッフに確認してください。');
           return;
         }
@@ -172,14 +224,13 @@ export default function App() {
       setState(queued);
       persist(queued);
 
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify(submission),
-        signal: AbortSignal.timeout(20000),
-      });
-      if (!response.ok) throw new Error('通信エラー');
-      const result = await response.json();
+      const result = await reportApi<{ status: string; reportId?: string; state?: ReflectionState; message?: string }>(
+        targetUrl, startggMode && match ? {
+          action: 'submit', reportId: submission.reportId, setId: match.id,
+          entrantIds: match.players.map((player) => player?.id), games: submission.games,
+          station,
+        } : submission,
+      );
       if (result.status === 'rejected' && result.reportId === submission.reportId) {
         setState({ ...state, pending: undefined });
         setScreen('edit');
@@ -189,7 +240,7 @@ export default function App() {
       if (result.status !== 'ok' || result.reportId !== submission.reportId) {
         throw new Error('保存未確認');
       }
-      const saved = { draft: emptyDraft(), receipt: submission };
+      const saved = { draft: emptyDraft(), receipt: submission, reflection: result.state, reflectionMessage: result.message };
       setState(saved);
       persist(saved);
       setScreen('receipt');
@@ -212,7 +263,8 @@ export default function App() {
             {screen === 'receipt' ? '送信完了' : screen === 'review' ? '送信内容の確認' : draft.correctionOf ? '報告の訂正' : '対戦結果の報告'}
           </h1>
         </div>
-        <details className="settings">
+        {startggMode && station !== null && <p className="station-label">対戦台 <strong>{station}</strong></p>}
+        {!startggMode && <details className="settings">
           <summary>送信先設定</summary>
           <label>GAS デプロイ URL
             <input type="text" value={gasUrl} disabled={sending} spellCheck={false} onChange={(event) => {
@@ -221,11 +273,17 @@ export default function App() {
               try { localStorage.setItem(GAS_URL_KEY, url); } catch { setStorageAvailable(false); }
             }} />
           </label>
-        </details>
+        </details>}
       </header>
 
       {!storageAvailable && <p className="notice">このブラウザでは、ページを閉じると入力や報告控えが失われます。</p>}
-      {screen === 'edit' && (
+      {startggMode && screen === 'edit' && !match && (
+        <MatchSearch url={gasUrl} onSelect={selectMatch} onBack={receipt ? () => {
+          setState((current) => ({ ...current, searching: false }));
+          setScreen('receipt');
+        } : undefined} />
+      )}
+      {screen === 'edit' && (!startggMode || match) && (
         <form onSubmit={(event) => {
           event.preventDefault();
           const problem = validate(draft);
@@ -236,7 +294,17 @@ export default function App() {
           }
         }}>
           {draft.correctionOf && <p className="notice">訂正はスタッフ確認待ちとして送信されます。</p>}
-          <section className="card">
+          {startggMode && match ? (
+            <section className="card">
+              <h2>{draft.player1} vs {draft.player2}</h2>
+              <p className="muted">{[match.phase, match.pool, match.round, 'BO' + draft.bestOf].filter(Boolean).join(' · ')}</p>
+              {match.completed && <div className="notice existing-result">
+                <strong>入力済み{match.score && ' · ' + match.score}</strong>
+                <p>勝者を変える場合は進行本部へお越しください。</p>
+              </div>}
+              <button type="button" className="wide" onClick={() => { setState((current) => ({ ...current, match: undefined, draft: emptyDraft() })); setError(''); }}>対戦を選び直す</button>
+            </section>
+          ) : <section className="card">
             <h2>対戦情報</h2>
             <fieldset>
               <legend>トーナメント</legend>
@@ -264,7 +332,7 @@ export default function App() {
               <label>選手１<input value={draft.player1} maxLength={80} onChange={(event) => update({ player1: event.target.value })} /></label>
               <label>選手２<input value={draft.player2} maxLength={80} onChange={(event) => update({ player2: event.target.value })} /></label>
             </div>
-          </section>
+          </section>}
 
           <div className="section-heading"><h2>ゲーム結果</h2><strong aria-label={`セットスコア ${p1} 対 ${p2}`}>{p1}–{p2}</strong></div>
           {draft.games.map((entry, index) => (
@@ -333,10 +401,13 @@ export default function App() {
 
       {screen === 'receipt' && receipt && (
         <section className="card">
-          <p className="notice">{receipt.correctionOf ? '訂正を受け付けました。スタッフの確認をお待ちください。' : '結果を受け付けました。'}</p>
+          <p className="notice" role="status">{startggMode && reflection ? REFLECTION_LABELS[reflection]
+            : receipt.correctionOf ? '訂正を受け付けました。スタッフの確認をお待ちください。' : '結果を受け付けました。'}</p>
+          {reflectionMessage && <p>{reflectionMessage}</p>}
+          {reflection === 'failed' && <p>報告IDを進行本部にお伝えください。</p>}
           <ResultSummary draft={receipt} />
           <p className="report-id">報告ID <code>{receipt.reportId}</code></p>
-          <button type="button" className="wide" onClick={() => {
+          {!startggMode && <button type="button" className="wide" onClick={() => {
             const { reportId, correctionKey: _key, ...previous } = receipt;
             const games = previous.games.map((entry) => ({
               ...entry,
@@ -346,9 +417,9 @@ export default function App() {
             }));
             setState({ ...state, draft: { ...previous, games, correctionOf: reportId } });
             setScreen('edit');
-          }}>この報告を訂正</button>
+          }}>この報告を訂正</button>}
           <button type="button" className="primary wide" onClick={() => {
-            setState({ draft: emptyDraft() });
+            setState(startggMode ? { ...state, draft: emptyDraft(), searching: true } : { draft: emptyDraft() });
             setScreen('edit');
           }}>新しい対戦を報告</button>
         </section>
